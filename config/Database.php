@@ -6,7 +6,7 @@ class Database {
     public static function get(): PDO {
         if (self::$pdo === null) {
             self::$pdo = new PDO(
-                "pgsql:host=db.gezldklnrxkwjpmfjhwz.supabase.co;port=5432;dbname=postgres;sslmode=require",
+                "pgsql:host=db.gezldklnrxkwjpmfjhwz.supabase.co;port=6543;dbname=postgres;sslmode=require",
                 "postgres",
                 "senati123$%",
                 [
