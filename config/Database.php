@@ -6,8 +6,8 @@ class Database {
     public static function get(): PDO {
         if (self::$pdo === null) {
             self::$pdo = new PDO(
-                "pgsql:host=db.gezldklnrxkwjpmfjhwz.supabase.co;port=6543;dbname=postgres;sslmode=require",
-                "postgres",
+                "pgsql:host=aws-1-us-east-1.pooler.supabase.com;port=5432;dbname=postgres;sslmode=require",
+                "postgres.gezldklnrxkwjpmfjhwz",
                 "senati123$%",
                 [
                     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
