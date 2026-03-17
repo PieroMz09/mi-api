@@ -27,7 +27,7 @@ try {
 
 // Parsear ruta
 $uri         = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$base        = '/api';
+$base        = '/';
 $path        = trim(substr($uri, strlen($base)), '/');
 $parts       = explode('/', $path);
 $method      = $_SERVER['REQUEST_METHOD'];
