@@ -8,9 +8,6 @@ class LoteController {
 
     public function __construct(PDO $db) { $this->db = $db; }
 
-    // POST /lote/reservar
-    // Body: { usuario_id, lote_id }
-    // Response: { success, message, nuevo_saldo }
     public function reservar(): void {
         $d = json_decode(file_get_contents('php://input'), true) ?? [];
         if (empty($d['usuario_id']) || empty($d['lote_id']))
@@ -22,7 +19,6 @@ class LoteController {
         try {
             $this->db->beginTransaction();
 
-            // Verificar saldo
             $ss = $this->db->prepare("SELECT saldo FROM usuarios WHERE id = ?");
             $ss->execute([$uid]);
             $saldo = floatval($ss->fetchColumn());
@@ -31,9 +27,9 @@ class LoteController {
                 Response::error("Saldo insuficiente. Necesitas S/.500.00. Tienes S/." . number_format($saldo, 2), 400);
             }
 
-            // Verificar lote disponible
             $sl = $this->db->prepare("
-                SELECT l.id, l.estado, l.codigo, s.precio, s.nombre AS seccion, p.nombre AS proyecto
+                SELECT l.id, l.estado::TEXT AS estado, l.codigo,
+                       s.precio, s.nombre AS seccion, p.nombre AS proyecto
                 FROM lotes l
                 JOIN secciones s ON s.id = l.seccion_id
                 JOIN proyectos p ON p.id = s.proyecto_id
@@ -42,25 +38,19 @@ class LoteController {
             $sl->execute([$lid]);
             $lote = $sl->fetch();
 
-            if (!$lote)                             { $this->db->rollBack(); Response::error("Lote no encontrado", 404); }
-            if ($lote['estado'] !== 'disponible')   { $this->db->rollBack(); Response::error("El lote {$lote['codigo']} no está disponible", 400); }
+            if (!$lote)                           { $this->db->rollBack(); Response::error("Lote no encontrado", 404); }
+            if ($lote['estado'] !== 'disponible') { $this->db->rollBack(); Response::error("El lote {$lote['codigo']} no está disponible", 400); }
 
-            // Reservar
             $this->db->prepare("UPDATE lotes SET estado='reservado', reservado_por=?, fecha_reserva=NOW() WHERE id=?")
                      ->execute([$uid, $lid]);
-
-            // Descontar saldo
             $this->db->prepare("UPDATE usuarios SET saldo = saldo - ? WHERE id=?")->execute([self::RESERVA, $uid]);
 
-            // Movimiento
             $concepto = "Separacion lote {$lote['codigo']} - {$lote['proyecto']} Seccion {$lote['seccion']}";
             $this->db->prepare("INSERT INTO movimientos (usuario_id, tipo, monto, concepto, fecha) VALUES (?, 'reserva', ?, ?, NOW())")
                      ->execute([$uid, -self::RESERVA, $concepto]);
 
-            // Comisiones upline
             $this->comisiones($uid, self::RESERVA, "reserva lote {$lote['codigo']}");
 
-            // Nuevo saldo
             $sn = $this->db->prepare("SELECT saldo FROM usuarios WHERE id=?");
             $sn->execute([$uid]);
             $nuevo = floatval($sn->fetchColumn());
@@ -74,9 +64,6 @@ class LoteController {
         }
     }
 
-    // POST /lote/comprar
-    // Body: { usuario_id, lote_id }
-    // Response: { success, message, precio_total, monto_pagado, nuevo_saldo }
     public function comprar(): void {
         $d = json_decode(file_get_contents('php://input'), true) ?? [];
         if (empty($d['usuario_id']) || empty($d['lote_id']))
@@ -89,7 +76,7 @@ class LoteController {
             $this->db->beginTransaction();
 
             $sl = $this->db->prepare("
-                SELECT l.id, l.estado, l.codigo, l.reservado_por,
+                SELECT l.id, l.estado::TEXT AS estado, l.codigo, l.reservado_por,
                        s.precio, s.nombre AS seccion, p.nombre AS proyecto
                 FROM lotes l
                 JOIN secciones s ON s.id = l.seccion_id
@@ -99,12 +86,12 @@ class LoteController {
             $sl->execute([$lid]);
             $lote = $sl->fetch();
 
-            if (!$lote)                                           { $this->db->rollBack(); Response::error("Lote no encontrado", 404); }
-            if ($lote['estado'] !== 'reservado')                  { $this->db->rollBack(); Response::error("Solo puedes comprar lotes que hayas separado", 400); }
-            if (intval($lote['reservado_por']) !== $uid)          { $this->db->rollBack(); Response::error("Este lote no fue separado por ti", 403); }
+            if (!$lote)                                  { $this->db->rollBack(); Response::error("Lote no encontrado", 404); }
+            if ($lote['estado'] !== 'reservado')         { $this->db->rollBack(); Response::error("Solo puedes comprar lotes que hayas separado", 400); }
+            if (intval($lote['reservado_por']) !== $uid) { $this->db->rollBack(); Response::error("Este lote no fue separado por ti", 403); }
 
-            $precio     = floatval($lote['precio']);
-            $restante   = $precio - self::RESERVA;
+            $precio   = floatval($lote['precio']);
+            $restante = $precio - self::RESERVA;
 
             $ss = $this->db->prepare("SELECT saldo FROM usuarios WHERE id=?");
             $ss->execute([$uid]);
@@ -146,15 +133,13 @@ class LoteController {
         }
     }
 
-    // GET /lote/reservados/{uid}
-    // Response: { success, data: [{id,codigo,estado,area_m2,precio,seccion,proyecto,proyecto_id,fecha_reserva,reservado_por}] }
     public function getReservados($uid): void {
         $uid = intval($uid);
         try {
             $stmt = $this->db->prepare("
-                SELECT l.id, l.codigo, l.estado,
-                       CAST(l.area_m2 AS CHAR) AS area_m2,
-                       DATE_FORMAT(l.fecha_reserva, '%d/%m/%Y') AS fecha_reserva,
+                SELECT l.id, l.codigo, l.estado::TEXT AS estado,
+                       CAST(l.area_m2 AS TEXT) AS area_m2,
+                       TO_CHAR(l.fecha_reserva, 'DD/MM/YYYY') AS fecha_reserva,
                        l.reservado_por,
                        s.nombre AS seccion, s.precio,
                        p.id AS proyecto_id, p.nombre AS proyecto
@@ -167,10 +152,10 @@ class LoteController {
             $stmt->execute([$uid]);
             $rows = $stmt->fetchAll();
             foreach ($rows as &$r) {
-                $r['id']           = (int)$r['id'];
-                $r['precio']       = (float)$r['precio'];
+                $r['id']            = (int)$r['id'];
+                $r['precio']        = (float)$r['precio'];
                 $r['reservado_por'] = (int)$r['reservado_por'];
-                $r['proyecto_id']  = (int)$r['proyecto_id'];
+                $r['proyecto_id']   = (int)$r['proyecto_id'];
             }
             Response::json(['success' => true, 'data' => $rows]);
         } catch (PDOException $e) {
@@ -178,31 +163,29 @@ class LoteController {
         }
     }
 
-    // GET /lote/comprados/{uid}
-    // Response: { success, data: [{id,codigo,estado,area_m2,precio,seccion,proyecto,proyecto_id,fecha_compra}] }
     public function getComprados($uid): void {
         $uid = intval($uid);
         try {
             $stmt = $this->db->prepare("
-                SELECT l.id, l.codigo, l.estado,
-                       CAST(l.area_m2 AS CHAR) AS area_m2,
-                       DATE_FORMAT(l.fecha_compra, '%d/%m/%Y') AS fecha_compra,
+                SELECT l.id, l.codigo, l.estado::TEXT AS estado,
+                       CAST(l.area_m2 AS TEXT) AS area_m2,
+                       TO_CHAR(l.fecha_compra, 'DD/MM/YYYY') AS fecha_compra,
                        s.nombre AS seccion, s.precio,
                        p.id AS proyecto_id, p.nombre AS proyecto,
                        c.monto AS monto_pagado
                 FROM lotes l
                 JOIN secciones s ON s.id = l.seccion_id
                 JOIN proyectos p ON p.id = s.proyecto_id
-                JOIN compras c   ON c.lote_id = l.id AND c.usuario_id = ?
+                JOIN compras c ON c.lote_id = l.id AND c.usuario_id = ?
                 WHERE l.comprado_por = ?
                 ORDER BY c.fecha DESC
             ");
             $stmt->execute([$uid, $uid]);
             $rows = $stmt->fetchAll();
             foreach ($rows as &$r) {
-                $r['id']          = (int)$r['id'];
-                $r['precio']      = (float)$r['precio'];
-                $r['proyecto_id'] = (int)$r['proyecto_id'];
+                $r['id']           = (int)$r['id'];
+                $r['precio']       = (float)$r['precio'];
+                $r['proyecto_id']  = (int)$r['proyecto_id'];
                 $r['monto_pagado'] = (float)$r['monto_pagado'];
             }
             Response::json(['success' => true, 'data' => $rows]);
@@ -211,7 +194,6 @@ class LoteController {
         }
     }
 
-    // Propagar comisiones N1=15% N2=5% N3=3%
     private function comisiones(int $uid, float $base, string $origen): void {
         $pcts      = [1 => 0.15, 2 => 0.05, 3 => 0.03];
         $actual_id = $uid;

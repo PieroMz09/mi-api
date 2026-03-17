@@ -6,15 +6,13 @@ class ProyectoController {
     private PDO $db;
     public function __construct(PDO $db) { $this->db = $db; }
 
-    // GET /proyecto
-    // Response: { success, data: [{id,nombre,ubicacion,secciones:[]}] }
     public function getAll(): void {
         try {
             $stmt = $this->db->query("SELECT id, nombre, descripcion, imagen FROM proyectos ORDER BY id ASC");
             $proyectos = $stmt->fetchAll();
 
             foreach ($proyectos as &$p) {
-                $p['id']       = (int)$p['id'];
+                $p['id']        = (int)$p['id'];
                 $p['ubicacion'] = $this->extraerUbicacion($p['nombre']);
                 $p['secciones'] = $this->getSecciones((int)$p['id']);
             }
@@ -26,8 +24,6 @@ class ProyectoController {
         }
     }
 
-    // GET /proyecto/{id}
-    // Response: { success, proyecto: {id,nombre,ubicacion,secciones:[{id,nombre,precio,lotes:[]}]} }
     public function getDetalle($id): void {
         $id = intval($id);
         try {
@@ -47,7 +43,6 @@ class ProyectoController {
         }
     }
 
-    // Secciones sin precio (para listado general)
     private function getSecciones(int $proyectoId): array {
         $s = $this->db->prepare("SELECT id, nombre FROM secciones WHERE proyecto_id = ? ORDER BY nombre ASC");
         $s->execute([$proyectoId]);
@@ -59,7 +54,6 @@ class ProyectoController {
         return $secs;
     }
 
-    // Secciones con precio (para detalle con mapa)
     private function getSeccionesConPrecio(int $proyectoId): array {
         $s = $this->db->prepare("SELECT id, nombre, precio FROM secciones WHERE proyecto_id = ? ORDER BY nombre ASC");
         $s->execute([$proyectoId]);
@@ -74,7 +68,8 @@ class ProyectoController {
 
     private function getLotes(int $seccionId): array {
         $s = $this->db->prepare("
-            SELECT l.id, l.codigo, l.estado, CAST(l.area_m2 AS CHAR) AS area_m2,
+            SELECT l.id, l.codigo, l.estado::TEXT AS estado,
+                   CAST(l.area_m2 AS TEXT) AS area_m2,
                    l.reservado_por, s.precio,
                    u.nombre_usuario AS reservado_por_nombre
             FROM lotes l
@@ -86,16 +81,14 @@ class ProyectoController {
         $s->execute([$seccionId]);
         $lotes = $s->fetchAll();
         foreach ($lotes as &$l) {
-            $l['id']           = (int)$l['id'];
-            $l['precio']       = (float)$l['precio'];
+            $l['id']            = (int)$l['id'];
+            $l['precio']        = (float)$l['precio'];
             $l['reservado_por'] = (int)$l['reservado_por'];
         }
         return $lotes;
     }
 
-    // Extrae "Lima", "Cañete" etc del nombre del proyecto
     private function extraerUbicacion(string $nombre): string {
-        // "Asia - Cañete" → "Cañete", "Cieneguilla - Lima" → "Lima"
         if (strpos($nombre, '-') !== false) {
             $partes = explode('-', $nombre);
             return trim(end($partes));

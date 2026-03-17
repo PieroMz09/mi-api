@@ -4,12 +4,10 @@ require_once __DIR__ . '/../utils/Response.php';
 
 class ComisionController {
     private PDO $db;
-    private const PX = 10; // por página
+    private const PX = 10;
 
     public function __construct(PDO $db) { $this->db = $db; }
 
-    // GET /comision/saldo/{uid}
-    // Response: { success, saldo }
     public function getSaldo($uid): void {
         $uid = intval($uid);
         try {
@@ -23,9 +21,6 @@ class ComisionController {
         }
     }
 
-    // POST /comision/recargar
-    // Body: { usuario_id, monto, metodo_pago }
-    // Response: { success, message }
     public function recargar(): void {
         $d = json_decode(file_get_contents('php://input'), true) ?? [];
         if (empty($d['usuario_id']) || empty($d['monto']) || empty($d['metodo_pago']))
@@ -38,35 +33,38 @@ class ComisionController {
         try {
             $this->db->prepare("
                 INSERT INTO recargas (usuario_id, monto, metodo_pago, estado, fecha)
-                VALUES (?, ?, ?, 'pendiente', NOW())
+                VALUES (?, ?, ?, 'aprobado', NOW())
             ")->execute([$uid, $monto, trim($d['metodo_pago'])]);
 
-            Response::json(['success' => true, 'message' => 'Solicitud de recarga enviada. Pendiente de aprobación.']);
+            // Acreditar saldo inmediatamente
+            $this->db->prepare("UPDATE usuarios SET saldo = saldo + ? WHERE id=?")->execute([$monto, $uid]);
+
+            Response::json(['success' => true, 'message' => 'Recarga realizada correctamente.']);
         } catch (PDOException $e) {
             Response::error($e->getMessage(), 500);
         }
     }
 
-    // GET /comision/recargas/{uid}?page=1
-    // Response: { success, data:[{id,monto,metodo_pago,estado,fecha}], ultima_pagina }
     public function getRecargas($uid): void {
         $uid    = intval($uid);
         $pagina = max(1, intval($_GET['page'] ?? 1));
-        $offset = ($pagina - 1) * self::PX;
+        $limit  = self::PX;
+        $offset = ($pagina - 1) * $limit;
         try {
             $tc = $this->db->prepare("SELECT COUNT(*) FROM recargas WHERE usuario_id=?");
             $tc->execute([$uid]);
-            $total    = intval($tc->fetchColumn());
-            $ult_pag  = max(1, (int)ceil($total / self::PX));
+            $total   = intval($tc->fetchColumn());
+            $ult_pag = max(1, (int)ceil($total / self::PX));
 
+            // LIMIT y OFFSET como enteros directos — PostgreSQL no acepta parámetros para estos
             $stmt = $this->db->prepare("
                 SELECT id, monto, metodo_pago, estado,
-                       DATE_FORMAT(fecha, '%d/%m/%Y - %h:%i %p') AS fecha
+                       TO_CHAR(fecha, 'DD/MM/YYYY - HH12:MI AM') AS fecha
                 FROM recargas WHERE usuario_id=?
                 ORDER BY fecha DESC
-                LIMIT ? OFFSET ?
+                LIMIT $limit OFFSET $offset
             ");
-            $stmt->execute([$uid, self::PX, $offset]);
+            $stmt->execute([$uid]);
             $rows = $stmt->fetchAll();
             foreach ($rows as &$r) { $r['id'] = (int)$r['id']; $r['monto'] = (float)$r['monto']; }
 
@@ -76,9 +74,6 @@ class ComisionController {
         }
     }
 
-    // POST /comision/retirar
-    // Body: { usuario_id, monto, tarjeta_id, nota? }
-    // Response: { success, message }
     public function retirar(): void {
         $d = json_decode(file_get_contents('php://input'), true) ?? [];
         if (empty($d['usuario_id']) || empty($d['monto']) || empty($d['tarjeta_id']))
@@ -90,35 +85,30 @@ class ComisionController {
         if ($monto <= 0) Response::error("El monto debe ser mayor a 0", 400);
 
         try {
-            // Verificar saldo
             $ss = $this->db->prepare("SELECT saldo FROM usuarios WHERE id=?");
             $ss->execute([$uid]);
             $saldo = floatval($ss->fetchColumn());
             if ($saldo < $monto) Response::error("Saldo insuficiente. Tienes S/." . number_format($saldo, 2), 400);
 
-            // Verificar tarjeta
             $st = $this->db->prepare("SELECT id FROM tarjetas WHERE id=? AND usuario_id=?");
             $st->execute([$tarjeta, $uid]);
             if (!$st->fetch()) Response::error("Tarjeta no válida", 400);
 
-            $this->db->prepare("INSERT INTO retiros (usuario_id, monto, tarjeta_id, estado, fecha) VALUES (?, ?, ?, 'pendiente', NOW())")
+            $this->db->prepare("INSERT INTO retiros (usuario_id, monto, tarjeta_id, estado, fecha) VALUES (?, ?, ?, 'realizado', NOW())")
                      ->execute([$uid, $monto, $tarjeta]);
-
-            // Descontar saldo inmediatamente
             $this->db->prepare("UPDATE usuarios SET saldo = saldo - ? WHERE id=?")->execute([$monto, $uid]);
 
-            Response::json(['success' => true, 'message' => 'Solicitud de retiro enviada. Pendiente de procesamiento.']);
+            Response::json(['success' => true, 'message' => 'Retiro realizado correctamente.']);
         } catch (PDOException $e) {
             Response::error($e->getMessage(), 500);
         }
     }
 
-    // GET /comision/retiros/{uid}?page=1
-    // Response: { success, data:[{id,monto,estado,fecha,banco,numero_cuenta}], ultima_pagina }
     public function getRetiros($uid): void {
         $uid    = intval($uid);
         $pagina = max(1, intval($_GET['page'] ?? 1));
-        $offset = ($pagina - 1) * self::PX;
+        $limit  = self::PX;
+        $offset = ($pagina - 1) * $limit;
         try {
             $tc = $this->db->prepare("SELECT COUNT(*) FROM retiros WHERE usuario_id=?");
             $tc->execute([$uid]);
@@ -126,16 +116,16 @@ class ComisionController {
             $ult_pag = max(1, (int)ceil($total / self::PX));
 
             $stmt = $this->db->prepare("
-                SELECT r.id, r.monto, r.estado,
-                       DATE_FORMAT(r.fecha, '%d/%m/%Y - %h:%i %p') AS fecha,
+                SELECT r.id, r.monto, r.estado::TEXT AS estado,
+                       TO_CHAR(r.fecha, 'DD/MM/YYYY - HH12:MI AM') AS fecha,
                        t.banco, t.numero_cuenta
                 FROM retiros r
                 JOIN tarjetas t ON t.id = r.tarjeta_id
                 WHERE r.usuario_id=?
                 ORDER BY r.fecha DESC
-                LIMIT ? OFFSET ?
+                LIMIT $limit OFFSET $offset
             ");
-            $stmt->execute([$uid, self::PX, $offset]);
+            $stmt->execute([$uid]);
             $rows = $stmt->fetchAll();
             foreach ($rows as &$r) { $r['id'] = (int)$r['id']; $r['monto'] = (float)$r['monto']; }
 
@@ -145,12 +135,11 @@ class ComisionController {
         }
     }
 
-    // GET /comision/movimientos/{uid}?page=1
-    // Response: { success, data:[{id,monto,nivel,concepto,fecha}], ultima_pagina }
     public function getMovimientos($uid): void {
         $uid    = intval($uid);
         $pagina = max(1, intval($_GET['page'] ?? 1));
-        $offset = ($pagina - 1) * self::PX;
+        $limit  = self::PX;
+        $offset = ($pagina - 1) * $limit;
         try {
             $tc = $this->db->prepare("SELECT COUNT(*) FROM movimientos WHERE usuario_id=? AND tipo='comision'");
             $tc->execute([$uid]);
@@ -159,17 +148,16 @@ class ComisionController {
 
             $stmt = $this->db->prepare("
                 SELECT id, monto, concepto,
-                       DATE_FORMAT(fecha, '%d/%m/%Y - %h:%i %p') AS fecha
+                       TO_CHAR(fecha, 'DD/MM/YYYY - HH12:MI AM') AS fecha
                 FROM movimientos WHERE usuario_id=? AND tipo='comision'
                 ORDER BY fecha DESC
-                LIMIT ? OFFSET ?
+                LIMIT $limit OFFSET $offset
             ");
-            $stmt->execute([$uid, self::PX, $offset]);
+            $stmt->execute([$uid]);
             $rows = $stmt->fetchAll();
             foreach ($rows as &$r) {
                 $r['id']    = (int)$r['id'];
                 $r['monto'] = (float)$r['monto'];
-                // Extraer nivel del concepto "Comision Nivel 1 ..."
                 preg_match('/Nivel\s*(\d)/i', $r['concepto'], $m);
                 $r['nivel'] = isset($m[1]) ? (int)$m[1] : 0;
             }
@@ -182,9 +170,6 @@ class ComisionController {
 
     // ─── TARJETAS ────────────────────────────────────────────────
 
-    // POST /tarjeta/agregar
-    // Body: { usuario_id, banco, numero_cuenta, cci }
-    // Response: { success, message }
     public function agregarTarjeta(): void {
         $d = json_decode(file_get_contents('php://input'), true) ?? [];
         if (empty($d['usuario_id']) || empty($d['banco']) || empty($d['numero_cuenta']) || empty($d['cci']))
@@ -199,8 +184,6 @@ class ComisionController {
         }
     }
 
-    // GET /tarjeta/{uid}
-    // Response: { success, data: [{id,banco,numero_cuenta,cci}] }
     public function getTarjetas($uid): void {
         $uid = intval($uid);
         try {
@@ -214,9 +197,6 @@ class ComisionController {
         }
     }
 
-    // PUT /tarjeta/{id}
-    // Body: { banco?, numero_cuenta?, cci? }
-    // Response: { success, message }
     public function editarTarjeta($id): void {
         $id = intval($id);
         $d  = json_decode(file_get_contents('php://input'), true) ?? [];
@@ -234,8 +214,6 @@ class ComisionController {
         }
     }
 
-    // DELETE /tarjeta/{id}
-    // Response: { success, message }
     public function eliminarTarjeta($id): void {
         try {
             $this->db->prepare("DELETE FROM tarjetas WHERE id=?")->execute([intval($id)]);
